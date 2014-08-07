@@ -1119,6 +1119,8 @@ int clusterStartHandshake(char *ip, int port) {
     /* Add the node with a random address (NULL as first argument to
      * createClusterNode()). Everything will be fixed during the
      * handskake. */
+	 //创建node时 将node的状态修改REDIS_NODE_HANDSHAKE|REDIS_NODE_MEET
+	 在nodeInHandshake函数主要判断REDIS_NODE_HANDSHAKE
     n = createClusterNode(NULL,REDIS_NODE_HANDSHAKE|REDIS_NODE_MEET);
     memcpy(n->ip,norm_ip,sizeof(n->ip));
     n->port = port;
@@ -1492,6 +1494,8 @@ int clusterProcessPacket(clusterLink *link) {
         if (totlen != explen) return 1;
     }
 
+	/*假设收到的是Meet命令，此时clusterLookupNode返回的sender是null，也就是
+	 *说sender不是已知节点
     /* Check if the sender is a known node. */
     sender = clusterLookupNode(hdr->sender);
     if (sender && !nodeInHandshake(sender)) {
@@ -1527,12 +1531,15 @@ int clusterProcessPacket(clusterLink *link) {
 
     /* Process packets by type. */
     if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_MEET) {
+	    //如果是Meet命令，link->node 为null
         redisLog(REDIS_DEBUG,"Ping packet received: %p", (void*)link->node);
 
         /* Add this node if it is new for us and the msg type is MEET.
          * In this stage we don't try to add the node with the right
          * flags, slaveof pointer, and so forth, as this details will be
          * resolved when we'll receive PONGs from the node. */
+		 //如果是Meet命令，则添加节点，此时只知道对方的ip和端口，但是一些细节的信息如slaver是
+		 //不知道的，在后续的收到PONG命令时得到相关信息
         if (!sender && type == CLUSTERMSG_TYPE_MEET) {
             clusterNode *node;
 
@@ -1540,12 +1547,13 @@ int clusterProcessPacket(clusterLink *link) {
             nodeIp2String(node->ip,link);
             node->port = ntohs(hdr->port);
             clusterAddNode(node);
+			//将新加node的信息写到nodes.conf
             clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
         }
 
         /* Get info from the gossip section */
         clusterProcessGossipSection(hdr,link);
-
+        //回复PONG
         /* Anyway reply with a PONG */
         clusterSendPing(link,CLUSTERMSG_TYPE_PONG);
     }
@@ -1554,10 +1562,15 @@ int clusterProcessPacket(clusterLink *link) {
     if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
         type == CLUSTERMSG_TYPE_MEET)
     {
+	    //如果是meet命令  log中也显示的是pong，这个？
         redisLog(REDIS_DEBUG,"%s packet received: %p",
             type == CLUSTERMSG_TYPE_PING ? "ping" : "pong",
             (void*)link->node);
+		/*
+		 *在clusterCron发动握手连接以后对方node返回Pong，以下就是处理pong
+		 */
         if (link->node) {
+		    //正在握手状态中
             if (nodeInHandshake(link->node)) {
                 /* If we already have this node, try to change the
                  * IP/port of the node with the new one. */
@@ -1578,10 +1591,14 @@ int clusterProcessPacket(clusterLink *link) {
 
                 /* First thing to do is replacing the random name with the
                  * right node name if this was a handshake stage. */
+				/*rename对方node的name，因为发起连接时node name是随机创建的*/
                 clusterRenameNode(link->node, hdr->sender);
+				
                 redisLog(REDIS_DEBUG,"Handshake with node %.40s completed.",
                     link->node->name);
+				//Hand shake 完成以后删除状态
                 link->node->flags &= ~REDIS_NODE_HANDSHAKE;
+				
                 link->node->flags |= flags&(REDIS_NODE_MASTER|REDIS_NODE_SLAVE);
                 clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
             } else if (memcmp(link->node->name,hdr->sender,
@@ -2737,7 +2754,7 @@ void clusterCron(void) {
             int fd;
             mstime_t old_ping_sent;
             clusterLink *link;
-
+            //握手处理，在meet中只是将node加入cluster，并不是真正的执行握手，在clusterCron中执行握手
             fd = anetTcpNonBlockBindConnect(server.neterr, node->ip,
                 node->port+REDIS_CLUSTER_PORT_INCR,
                     server.bindaddr_count ? server.bindaddr[0] : NULL);
@@ -2748,9 +2765,9 @@ void clusterCron(void) {
                     server.neterr);
                 continue;
             }
-            link = createClusterLink(node);
+            link = createClusterLink(node);//赋值link->node=node
             link->fd = fd;
-            node->link = link;
+            node->link = link;//握手处理，创建连接以后将该link赋值给node
             aeCreateFileEvent(server.el,link->fd,AE_READABLE,
                     clusterReadHandler,link);
             /* Queue a PING in the new connection ASAP: this is crucial
@@ -2774,9 +2791,10 @@ void clusterCron(void) {
              * are no longer in meet/handshake status, we want to send
              * normal PING packets. */
             node->flags &= ~REDIS_NODE_MEET;
-
+            
             redisLog(REDIS_DEBUG,"Connecting with Node %.40s at %s:%d",
                     node->name, node->ip, node->port+REDIS_CLUSTER_PORT_INCR);
+					
         }
     }
     dictReleaseIterator(di);
