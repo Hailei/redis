@@ -1304,6 +1304,9 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
         return;
     }
 
+	/*
+	 *找出dirtySlot
+	 */
     for (j = 0; j < REDIS_CLUSTER_SLOTS; j++) {
         if (bitmapTestBit(slots,j)) {
             /* The slot is already bound to the sender of this message. */
@@ -1319,11 +1322,16 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
              * 1) The slot was unassigned or the new node claims it with a
              *    greater configEpoch.
              * 2) We are not currently importing the slot. */
+			/* 需要修改slot信息的两种条件在redis集群规范文档中有提及
+			 *  1. slot未分配，sender发过的信息说这个slot属于sender
+			 *  2. sender和cluster->slots中的node不一致但是sender的epoch大
+			 */
             if (server.cluster->slots[j] == NULL ||
                 server.cluster->slots[j]->configEpoch < senderConfigEpoch)
             {
                 /* Was this slot mine, and still contains keys? Mark it as
                  * a dirty slot. */
+				/* 这种条件说明和sender有slot冲突 */
                 if (server.cluster->slots[j] == myself &&
                     countKeysInSlot(j) &&
                     sender != myself)
@@ -1350,6 +1358,12 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
      *    master.
      * 2) We are a slave and our master is left without slots. We need
      *    to replicate to the new slots owner. */
+	 /* 假设至少有一个slot被重新赋值给另外一个带有更大configEpoch的节点
+	  * 出现这种情况有以下两种可能：
+	  * 1) 节点是master down以后保留slot信息，经过一次failover后，node恢复以后会成为新的master的slaver
+	  * 2) 同样是failover以后，不同的是节点是slaver，同样master down以后但是保留了slot信息，
+	  *    此时该slaver应该成为新master的slaver
+	  */
     if (newmaster && curmaster->numslots == 0) {
         redisLog(REDIS_WARNING,
             "Configuration change detected. Reconfiguring myself "
@@ -1707,6 +1721,8 @@ int clusterProcessPacket(clusterLink *link) {
         /* 1) If the sender of the message is a master, and we detected that
          *    the set of slots it claims changed, scan the slots to see if we
          *    need to update our configuration. */
+		/* slot变化
+		 */
         if (sender && nodeIsMaster(sender) && dirty_slots)
             clusterUpdateSlotsConfigWith(sender,senderConfigEpoch,hdr->myslots);
 
@@ -2765,6 +2781,13 @@ void clusterCron(void) {
                     server.neterr);
                 continue;
             }
+			/*第一篇看代码的时候，对这一点理解有误
+			 *假设用户发出meet某个node命令以后，首先是根据ip和port创建一个node存放在
+			 *cluster->nodes中，且在连接(nonblocking)以后建议link->node和node->link的映射关系
+			 *表明该link属于哪个node，而在node端的link不表明属于哪个node，作者说一般不关心这个
+			 *因为发送的clustermessage中包括sender信息
+			 *因此在log中看到信息Ping packet received: (nil) node总是null
+			 */
             link = createClusterLink(node);//赋值link->node=node
             link->fd = fd;
             node->link = link;//握手处理，创建连接以后将该link赋值给node
@@ -3036,17 +3059,24 @@ int clusterAddSlot(clusterNode *n, int slot) {
 /* Delete the specified slot marking it as unassigned.
  * Returns REDIS_OK if the slot was assigned, otherwise if the slot was
  * already unassigned REDIS_ERR is returned. */
+ 
 int clusterDelSlot(int slot) {
+    //根据slot找到对应的node
     clusterNode *n = server.cluster->slots[slot];
 
     if (!n) return REDIS_ERR;
+	//把node的slot数组相应bit清空，删除slot
     redisAssert(clusterNodeClearSlotBit(n,slot) == 1);
+	//再把集群配置的slot对应的节点置为NULL
     server.cluster->slots[slot] = NULL;
     return REDIS_OK;
 }
 
 /* Delete all the slots associated with the specified node.
  * The number of deleted slots is returned. */
+/* 
+ *清空一个node的所有slot
+ */
 int clusterDelNodeSlots(clusterNode *node) {
     int deleted = 0, j;
 
@@ -3104,7 +3134,7 @@ void clusterUpdateState(void) {
     /* Check if all the slots are covered. */
     for (j = 0; j < REDIS_CLUSTER_SLOTS; j++) {
         if (server.cluster->slots[j] == NULL ||
-            server.cluster->slots[j]->flags & (REDIS_NODE_FAIL))
+            server.cluster->slots[j]->flags & (REDIS_NODE_FAIL))//判断slot所对应的node的状态是fail
         {
             new_state = REDIS_CLUSTER_FAIL;
             break;
