@@ -1323,6 +1323,7 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
              *    greater configEpoch.
              * 2) We are not currently importing the slot. */
 			/* 需要修改slot信息的两种条件在redis集群规范文档中有提及
+			 * 值得注意的是server.cluster->slots
 			 *  1. slot未分配，sender发过的信息说这个slot属于sender
 			 *  2. sender和cluster->slots中的node不一致但是sender的epoch大
 			 */
@@ -1399,22 +1400,30 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
  * and is supervised by the sysadmin, however it is possible for a failover
  * to happen exactly while the node we are resharding a slot to assigns itself
  * a new configuration epoch, but before it is able to propagate it.
- *
+ * 因为slave在failover需要接受其他的master的投票选举，得票高的slave会晋升成master
+ * 因此同一master的slaves的configEpoch是不可能相同。注：投票就是将slave的configEpoch+1
+ * 然而当我们执行一次手动slot迁移将给slot对应的node一个新的configEpoch。一般情况来说
+ * 重新分片是由管理员来手动执行的不会产生什么问题，当也有可能会在resharding过程恰巧
+ * 赶上failover
  * So technically it is possible in this condition that two nodes end with
  * the same configuration epoch.
- *
+ * 理论上来看，在这种情况两个不同节点拥有相同configEpoch是有可能的
  * Another possibility is that there are bugs in the implementation causing
  * this to happen.
+ * 另外一种情况，某种bug会导致这种情况发生
  *
  * Moreover when a new cluster is created, all the nodes start with the same
  * configEpoch. This collision resolution code allows nodes to automatically
  * end with a different configEpoch at startup automatically.
- *
+ * 此外一个新的集群在初始化的时候，所有的node都是相同的configEpoch，碰撞解决方案会自动
+ * 地将不同的node设置成不同的configEpoch
  * In all the cases, we want a mechanism that resolves this issue automatically
  * as a safeguard. The same configuration epoch for masters serving different
  * set of slots is not harmful, but it is if the nodes end serving the same
  * slots for some reason (manual errors or software bugs) without a proper
  * failover procedure.
+ * 对于以上提及的所有case，我们需要一个机制来解决。处理不用slot的master拥有相同的config
+ * -Epoch是没有害处，但不同node处理相同slot同时这些node的configEpoch也是相同的，那就有问题了
  *
  * In general we want a system that eventually always ends with different
  * masters having different configuration epochs whatever happened, since
@@ -3555,6 +3564,7 @@ void clusterCommand(redisClient *c) {
             }
             /* If this hash slot was served by 'myself' before to switch
              * make sure there are no longer local keys for this hash slot. */
+			/* 如果参数slot对应的节点不是myself，根据nodename查到的node也不是mysql 返回error*/
             if (server.cluster->slots[slot] == myself && n != myself) {
                 if (countKeysInSlot(slot) != 0) {
                     addReplyErrorFormat(c,

@@ -879,6 +879,7 @@ void resetClient(redisClient *c) {
     c->reqtype = 0;
     c->multibulklen = 0;
     c->bulklen = -1;
+	/* asking之后的命令 被执行以后清除REDIS_ASKING标志
     /* We clear the ASKING flag as well if we are not inside a MULTI, and
      * if what we just executed is not the ASKING command itself. */
     if (!(c->flags & REDIS_MULTI) && prevcmd != askingCommand)
