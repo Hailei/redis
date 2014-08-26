@@ -1325,14 +1325,17 @@ void clusterUpdateSlotsConfigWith(clusterNode *sender, uint64_t senderConfigEpoc
 			/* 需要修改slot信息的两种条件在redis集群规范文档中有提及
 			 * 值得注意的是server.cluster->slots
 			 *  1. slot未分配，sender发过的信息说这个slot属于sender
-			 *  2. sender和cluster->slots中的node不一致但是sender的epoch大
+			 *  2. sender和cluster->slots中的node不一致但是sender的epoch大。
+			 *     例如执行手动slot的迁移以后，在importing执行setslot会更新configEpoch为currentEpoch++导致configEpoch变大
 			 */
             if (server.cluster->slots[j] == NULL ||
                 server.cluster->slots[j]->configEpoch < senderConfigEpoch)
             {
                 /* Was this slot mine, and still contains keys? Mark it as
                  * a dirty slot. */
-				/* 这种条件说明和sender有slot冲突 */
+				/* 假设一种情况，手动执行某个slot的迁移，但是在没有把全部的key迁移过去之前
+				 * 目标节点就执行setslot将slot设置成由它处理，并将slot信息的变更传播给整个集群
+				 * 原节点就会出现脏的slot,后续会将脏slot的key都删除掉 */
                 if (server.cluster->slots[j] == myself &&
                     countKeysInSlot(j) &&
                     sender != myself)
@@ -3564,7 +3567,7 @@ void clusterCommand(redisClient *c) {
             }
             /* If this hash slot was served by 'myself' before to switch
              * make sure there are no longer local keys for this hash slot. */
-			/* 如果参数slot对应的节点不是myself，根据nodename查到的node也不是mysql 返回error*/
+			/* 变更slot归属之前需要保证原负责该slot的节点不中不再含有任何数据 */
             if (server.cluster->slots[slot] == myself && n != myself) {
                 if (countKeysInSlot(slot) != 0) {
                     addReplyErrorFormat(c,
@@ -3576,12 +3579,15 @@ void clusterCommand(redisClient *c) {
             /* If this slot is in migrating status but we have no keys
              * for it assigning the slot to another node will clear
              * the migratig status. */
+			/* 该节点是迁移的原节点，如果迁移已经完成，并且设置了migrating状态，去除migrating状态 */
             if (countKeysInSlot(slot) == 0 &&
                 server.cluster->migrating_slots_to[slot])
                 server.cluster->migrating_slots_to[slot] = NULL;
 
             /* If this node was importing this slot, assigning the slot to
              * itself also clears the importing status. */
+			/* 如果节点是迁移的目标节点，首先清除importing状态，然后更新configEpoch这样就能把slot的更新传播
+			 *  整个集群中 */
             if (n == myself &&
                 server.cluster->importing_slots_from[slot])
             {
