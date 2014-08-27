@@ -4467,6 +4467,12 @@ clusterNode *getNodeByQuery(redisClient *c, struct redisCommand *cmd, robj **arg
      * request as "ASKING", we can serve the request. However if the request
      * involves multiple keys and we don't have them all, the only option is
      * to send a TRYAGAIN error. */
+	/* 如果节点正在接收该slot,同时client也正确地发出了asking，这样就能处理这个请求
+	 * 但是如果请求是多个key同时节点又不能全部处理这些key，唯一的选项就是发送一个TRYAGAIN */
+	/* 假设迁移完成以后，我们先在目标节点上执行setslot然后在原节点执行setslot，那么目标节点会消除importing状态
+	 * 假设源节点还没有执行setslot，客户端还是将请求发送到源节点，此时它仍然处于migrating状态。
+	 * 客户端仍然发送先asking再请求目标节点。这时一下条件不成立。
+	 * 会走到最后一句执行，既由目标节点处理该请求*/
     if (importing_slot &&
         (c->flags & REDIS_ASKING || cmd->flags & REDIS_CMD_ASKING))
     {
