@@ -1,12 +1,5 @@
 package redis.clients.jedis.async.process;
 
-import redis.clients.jedis.Connection;
-import redis.clients.jedis.Protocol;
-import redis.clients.jedis.async.callback.AsyncResponseCallback;
-import redis.clients.jedis.async.request.RequestBuilder;
-import redis.clients.jedis.exceptions.JedisConnectionException;
-import redis.clients.jedis.exceptions.JedisException;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
@@ -20,6 +13,13 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
 
+import redis.clients.jedis.Connection;
+import redis.clients.jedis.Protocol;
+import redis.clients.jedis.async.callback.AsyncResponseCallback;
+import redis.clients.jedis.async.request.RequestBuilder;
+import redis.clients.jedis.exceptions.JedisConnectionException;
+import redis.clients.jedis.exceptions.JedisException;
+
 public class AsyncDispatcher extends Thread {
     private static final int SELECTOR_SELECT_TIMEOUT = 300;
 
@@ -30,6 +30,7 @@ public class AsyncDispatcher extends Thread {
     private AtomicBoolean shutdown = new AtomicBoolean(false);
 
     private final ByteBuffer readBuffer;
+    private AtomicBoolean wakeUp = new AtomicBoolean();
 
     private Deque<AsyncJedisTask> readTaskQueue = new LinkedBlockingDeque<AsyncJedisTask>();
     private Deque<AsyncJedisTask> writeTaskQueue = new LinkedBlockingDeque<AsyncJedisTask>();
@@ -83,8 +84,9 @@ public class AsyncDispatcher extends Thread {
 		|| readTaskQueue.peek() != null) {
 
 	    try {
+	   
 		interestOpWriteIfAnyRequestPending();
-		
+		wakeUp.set(false);
 		int num = selector.select(SELECTOR_SELECT_TIMEOUT);
 		if (num < 0) {
 		    continue;
@@ -114,11 +116,16 @@ public class AsyncDispatcher extends Thread {
 		handleConnectionException(e);
 	    }
 	}
+	if(wakeUp.get()){
+	    selector.wakeup();
+	}
     }
 
     public synchronized void registerRequest(AsyncJedisTask task) {
 	writeTaskQueue.add(task);
-	selector.wakeup();
+	if(wakeUp.compareAndSet(false, true)){
+	    selector.wakeup();
+	}
     }
 
     public void setShutdown(boolean shutdown) {
@@ -256,7 +263,6 @@ public class AsyncDispatcher extends Thread {
 		    SelectionKey.OP_READ | SelectionKey.OP_WRITE);
 	}
     }
-
     private void connect() {
 	if (!connection.isConnected()) {
 	    connection.connect();
