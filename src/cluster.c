@@ -911,7 +911,17 @@ void clusterRenameNode(clusterNode *node, char *newname) {
  * the node ID as key, and the time when it is ok to re-add the node as
  * value.
  * -------------------------------------------------------------------------- */
-
+ 
+/* -----------------------------------------------------------------------------
+ * 集群节点黑名单
+ * 节点黑名单是一种用于保证给定NodeId的节点删除以后过去指定时间以后不会被重新添加
+ * 这个时间用REDIS_CLUSTER_BLACKLIST_TTL为标示，单位是秒
+ * 当我们要把一个节点从集群中完整删除的话，这是一个非常有用的方式。当调用了Cluster
+ * FORGET，同时把这个节点放入黑名单，即使接收其他节点的gossip消息(假设gossip中包含这个节点)，
+ * 我依然知道这个节点是要删除的，所以不会重新添加它。
+ *
+ * 目前REDIS_CLUSTER_BLACKLIST_TTL设置为1分钟，这意味着redis-trib有60秒的时间去给所有节点
+ * 发FORGET，在这60秒内不用担心因为删除以后又因为其他节点发送gossip而又被重新添加
 #define REDIS_CLUSTER_BLACKLIST_TTL 60      /* 1 minute. */
 
 
@@ -2761,6 +2771,7 @@ void clusterCron(void) {
      * not turned into a normal node is removed from the nodes. Usually it is
      * just the NODE_TIMEOUT value, but when NODE_TIMEOUT is too small we use
      * the value of 1 second. */
+	/* 握手超时是指握手在一段时间以后没有转成正常节点而被删除的时间 */
     handshake_timeout = server.cluster_node_timeout;
     if (handshake_timeout < 1000) handshake_timeout = 1000;
 
@@ -2773,6 +2784,7 @@ void clusterCron(void) {
 
         /* A Node in HANDSHAKE state has a limited lifespan equal to the
          * configured node timeout. */
+		/* 删除握手没有成功的节点 */
         if (nodeInHandshake(node) && now - node->ctime > handshake_timeout) {
             freeClusterNode(node);
             continue;
